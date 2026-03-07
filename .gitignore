@@ -1,3 +1,6 @@
-./data
-./data/data/.DS_Store
-./.DS_Store
+.DS_Store
+/data/*
+!/data/dnd-50-sdr51-eng/
+!/data/dnd-55-sdr52-eng/
+!/data/dnd-50-sdr51-pl/
+!/data/dnd-55-sdr52-pl/
