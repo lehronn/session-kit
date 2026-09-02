@@ -17,8 +17,8 @@ class SearchView(ctk.CTkFrame):
         
         self.selected_entries: List[DataEntry] = []
         
-        self.grid_columnconfigure(0, weight=3) # Search 75%
-        self.grid_columnconfigure(1, weight=5) # Details 62.5% -> Adjusted for better balance
+        self.grid_columnconfigure(0, weight=2) # Search area
+        self.grid_columnconfigure(1, weight=3) # Detail area
         self.grid_rowconfigure(1, weight=1)
         
         self._search_queue = queue.Queue()
@@ -52,7 +52,7 @@ class SearchView(ctk.CTkFrame):
     def _build_top_bar(self):
         # Spans across both columns
         self.top_bar = ctk.CTkFrame(self, height=60)
-        self.top_bar.grid(row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
+        self.top_bar.grid(row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=(10, 0))
         self.top_bar.grid_columnconfigure(0, weight=1)
         
         # Search Entry
@@ -103,12 +103,49 @@ class SearchView(ctk.CTkFrame):
 
     def _build_results_area(self):
         self.scroll_frame = ctk.CTkScrollableFrame(self)
-        self.scroll_frame.grid(row=1, column=0, sticky="nsew", padx=(10, 5), pady=(0, 10))
+        self.scroll_frame.grid(row=1, column=0, sticky="nsew", padx=(10, 5), pady=10)
         self.scroll_frame.grid_columnconfigure(0, weight=1)
+        
+        # Configure internal canvas for more predictable scrolling
+        canvas = getattr(self.scroll_frame, "_canvas", None)
+        if canvas:
+            canvas.configure(yscrollincrement=1) # Pixel-precision
+        
+    def _bind_scroll_recursive(self, widget, handler):
+        """Recursively binds a scroll handler to a widget and all its components."""
+        try:
+            # Bind to the widget itself
+            widget.bind("<MouseWheel>", handler, add="+")
+            
+            # Target internal CTk/Tkinter components
+            for attr in ["_canvas", "_label", "_entry", "_textbox", "_checkbox", "_bg_canvas", "_text_label"]:
+                obj = getattr(widget, attr, None)
+                if obj and hasattr(obj, "bind"):
+                    obj.bind("<MouseWheel>", handler, add="+")
+            
+            # Recursive pass
+            for child in widget.winfo_children():
+                self._bind_scroll_recursive(child, handler)
+        except: pass
+
+    def _on_mousewheel_results(self, event):
+        """Directly scroll the results canvas. macOS delta is typically 1 or -1."""
+        canvas = getattr(self.scroll_frame, "_canvas", None)
+        if canvas:
+            # On macOS, moving fingers UP (scroll down) gives negative delta in some Tkinter builds
+            # but positive in others. CTk's default is -1 * delta.
+            # We'll use a speed that feels natural on macOS (approx 40px per tick)
+            amt = int(-40 * event.delta)
+            canvas.yview_scroll(amt, "units")
+
+    def _on_mousewheel_detail(self, event):
+        """Direct scroll for the textbox."""
+        # Textbox delta is line-based. -2 feels good.
+        self.detail_textbox.yview_scroll(int(-2 * event.delta), "units")
 
     def _build_detail_panel(self):
         self.detail_frame = ctk.CTkFrame(self)
-        self.detail_frame.grid(row=1, column=1, sticky="nsew", padx=(5, 10), pady=(0, 10))
+        self.detail_frame.grid(row=1, column=1, sticky="nsew", padx=(5, 10), pady=10)
         self.detail_frame.grid_columnconfigure(0, weight=1)
         self.detail_frame.grid_rowconfigure(0, weight=1)
 
@@ -121,6 +158,9 @@ class SearchView(ctk.CTkFrame):
         self.detail_textbox.grid(row=0, column=0, sticky="nsew")
         self.detail_textbox.insert("0.0", "Select an item to view details...")
         self.detail_textbox.configure(state="disabled")
+        
+        # Bind scroll for details
+        self.detail_textbox.bind("<MouseWheel>", self._on_mousewheel_detail)
         
     def perform_search(self):
         if not self.search_engine:
@@ -165,6 +205,7 @@ class SearchView(ctk.CTkFrame):
             self.after_cancel(self._batch_after_id)
             self._batch_after_id = None
 
+        # Clear existing
         for widget in self._result_widgets:
             try:
                 widget.destroy()
@@ -173,7 +214,7 @@ class SearchView(ctk.CTkFrame):
             
         if not results:
             lbl = ctk.CTkLabel(self.scroll_frame, text="No results found.", font=ctk.CTkFont(size=14, slant="italic"))
-            lbl.grid(row=0, column=0, pady=20)
+            lbl.grid(row=0, column=0, pady=20, sticky="ew")
             self._result_widgets.append(lbl)
             return
 
@@ -191,29 +232,35 @@ class SearchView(ctk.CTkFrame):
             card = DataCard(
                 self.scroll_frame,
                 entry=entry,
-                on_view_detail=self.show_detail, # Changed from show_detail_dialog
+                on_view_detail=self.show_detail,
                 on_select_toggle=self.handle_select_toggle
             )
             card.grid(row=i, column=0, sticky="ew", padx=5, pady=5)
             self._result_widgets.append(card)
+            
+            # Explicitly propagate scroll events for macOS safely
+            self._bind_scroll_recursive(card, self._on_mousewheel_results)
             
             if entry in self.selected_entries:
                 card.checkbox_var.set(True)
         
         if end_index < len(results):
             self._batch_after_id = self.after(10, lambda: self._render_batch(results, end_index, show_more, total_count))
-        elif show_more:
-            lbl = ctk.CTkLabel(
-                self.scroll_frame,
-                text=f"...and {total_count - len(results)} more results.",
-                font=ctk.CTkFont(size=12, slant="italic")
-            )
-            lbl.grid(row=len(results), column=0, pady=10)
-            self._result_widgets.append(lbl)
-            self._batch_after_id = None
         else:
-            self._batch_after_id = None
+            if show_more:
+                lbl = ctk.CTkLabel(
+                    self.scroll_frame,
+                    text=f"...and {total_count - len(results)} more results.",
+                    font=ctk.CTkFont(size=12, slant="italic")
+                )
+                lbl.grid(row=len(results), column=0, pady=10, sticky="ew")
+                self._result_widgets.append(lbl)
+                self._bind_scroll_recursive(lbl, self._on_mousewheel_results)
             
+            self._batch_after_id = None
+            # Force update scrollregion/scrollbar
+            self.scroll_frame.update_idletasks()
+
     def handle_select_toggle(self, entry: DataEntry, is_selected: bool):
         if is_selected:
             if entry not in self.selected_entries:
@@ -244,7 +291,6 @@ class SearchView(ctk.CTkFrame):
         self.detail_textbox.delete("0.0", "end")
         self.detail_textbox.insert("0.0", entry.content_markdown)
         self.detail_textbox.configure(state="disabled")
-        # Scroll to top
         self.detail_textbox.see("0.0")
 
     def export_selected(self):
